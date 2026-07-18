@@ -1,0 +1,24 @@
+[package]
+name = "rgraphql"
+description = "RGraphQL: a hand-rolled GraphQL query-language lexer and parser written from scratch in Rust (no existing GraphQL implementation reused). v0.1.0 covers the query-document tokenizer and a parser for simple query operations (field selections, nested selection sets, arguments, aliases). No unsafe, no external parsing-crate dependency."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["RGraphQL Contributors"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/aon-co-jp/RGraphQL"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[features]
+# 既定はコアのみ(フレームワーク非依存)。
+default = []
+# RPoem/Poem(tokio/hyper)によるHTTP公開層アダプタ。v0.1.0ではアダプタ層の
+# スタブ(`poem_adapter`モジュール)のみ有効化する。本実装(実際のpoem依存・
+# 非同期ハンドラ)は次段階で、この配列にpoem等の依存を追加する。
+poem = []
+
+[dependencies]
+
+[dev-dependencies]
