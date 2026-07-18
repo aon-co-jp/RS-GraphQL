@@ -9,13 +9,25 @@
 //! - 引数値: 変数参照・整数・浮動小数・文字列・真偽値・null・列挙値・
 //!   リスト・入力オブジェクト。
 //!
-//! ## 未対応(次段階 v0.2.0)
-//! - mutation / subscription 操作。
-//! - フラグメント定義・フラグメント展開・インラインフラグメント。
-//! - 変数定義(`query Foo($id: ID!)`)・ディレクティブ。
+//! ## v0.2.0で追加した対応範囲
+//! - `mutation`操作(`subscription`は型としては存在するが未対応のまま)。
+//! - 変数定義(`query Foo($id: ID!, $limit: Int = 10)`)とクエリ内での
+//!   変数参照(既存の`Value::Variable`をそのまま利用)。
+//! - フラグメント定義(`fragment Name on Type { ... }`)・フラグメント
+//!   スプレッド(`...Name`)・インラインフラグメント(`... on Type { }`
+//!   および型条件省略形`... { }`)。
+//! - ディレクティブ(`@include(if: $x)` / `@skip(if: $x)` 等)の構文解析。
+//!   実行時評価(条件によるフィールド除外)はvalidation/execution層の
+//!   仕事であり、本パーサーのスコープ外。
+//!
+//! ## 未対応(次段階)
+//! - `subscription`操作の実際のパース。
+//! - スキーマ定義言語(SDL)のパーサー。
+//! - 検証(validation)・実行エンジン(execution/resolver)。
 
 use crate::ast::{
-    Argument, Document, Field, OperationDefinition, OperationType, Selection, SelectionSet, Value,
+    Argument, Directive, Document, Field, FragmentDefinition, FragmentSpread, InlineFragment,
+    OperationDefinition, OperationType, Selection, SelectionSet, Type, Value, VariableDefinition,
 };
 use crate::lexer::{tokenize, LexError};
 use crate::token::{Token, TokenKind};
@@ -116,19 +128,27 @@ impl Parser {
         }
     }
 
-    /// ドキュメント全体(1個以上の操作定義)。
+    /// ドキュメント全体(1個以上の操作定義・フラグメント定義)。
     fn parse_document(&mut self) -> Result<Document, ParseError> {
         let mut operations = Vec::new();
+        let mut fragments = Vec::new();
         while !self.at_eof() {
-            operations.push(self.parse_operation()?);
+            if matches!(&self.peek().kind, TokenKind::Name(s) if s == "fragment") {
+                fragments.push(self.parse_fragment_definition()?);
+            } else {
+                operations.push(self.parse_operation()?);
+            }
         }
-        if operations.is_empty() {
+        if operations.is_empty() && fragments.is_empty() {
             return self.syntax("空のドキュメントです(少なくとも1つの操作が必要)");
         }
-        Ok(Document { operations })
+        Ok(Document {
+            operations,
+            fragments,
+        })
     }
 
-    /// 操作定義。省略形 `{ ... }` または `query [Name] { ... }`。
+    /// 操作定義。省略形 `{ ... }` または `query|mutation [Name] (...) directives { ... }`。
     fn parse_operation(&mut self) -> Result<OperationDefinition, ParseError> {
         // 省略形: 選択集合が直接始まる無名queryショートハンド。
         if matches!(self.peek().kind, TokenKind::BraceL) {
@@ -136,6 +156,8 @@ impl Parser {
             return Ok(OperationDefinition {
                 operation: OperationType::Query,
                 name: None,
+                variable_definitions: Vec::new(),
+                directives: Vec::new(),
                 selection_set,
             });
         }
@@ -153,15 +175,15 @@ impl Parser {
 
         let operation = match op_name.as_str() {
             "query" => OperationType::Query,
-            "mutation" | "subscription" => {
-                return self.syntax(format!(
-                    "`{}` 操作は v0.1.0 では未対応です(次段階で実装予定)",
-                    op_name
-                ))
+            "mutation" => OperationType::Mutation,
+            "subscription" => {
+                return self.syntax(
+                    "`subscription` 操作は現段階では未対応です(次段階で実装予定)".to_string(),
+                )
             }
             other => {
                 return self.syntax(format!(
-                    "未知の操作種別 `{}`(`query` を期待)",
+                    "未知の操作種別 `{}`(`query`/`mutation` を期待)",
                     other
                 ))
             }
@@ -175,15 +197,115 @@ impl Parser {
             None
         };
 
-        // 変数定義 `(...)` は v0.1.0 未対応(明示的にエラーにする)。
-        if matches!(self.peek().kind, TokenKind::ParenL) {
-            return self.syntax("変数定義は v0.1.0 では未対応です(次段階で実装予定)");
-        }
+        // 任意の変数定義 `($id: ID!, $limit: Int = 10)`。
+        let variable_definitions = if matches!(self.peek().kind, TokenKind::ParenL) {
+            self.parse_variable_definitions()?
+        } else {
+            Vec::new()
+        };
+
+        // 任意のディレクティブ。
+        let directives = self.parse_directives()?;
 
         let selection_set = self.parse_selection_set()?;
         Ok(OperationDefinition {
             operation,
             name,
+            variable_definitions,
+            directives,
+            selection_set,
+        })
+    }
+
+    /// 変数定義リスト `( $name: Type = default, ... )`。
+    fn parse_variable_definitions(&mut self) -> Result<Vec<VariableDefinition>, ParseError> {
+        self.expect(&TokenKind::ParenL)?;
+        let mut defs = Vec::new();
+        while !matches!(self.peek().kind, TokenKind::ParenR) {
+            if self.at_eof() {
+                return self.syntax("変数定義リストが `)` で閉じられていません");
+            }
+            self.expect(&TokenKind::Dollar)?;
+            let name = self.expect_name()?;
+            self.expect(&TokenKind::Colon)?;
+            let var_type = self.parse_type()?;
+            let default_value = if self.eat(&TokenKind::Equals) {
+                Some(self.parse_value()?)
+            } else {
+                None
+            };
+            defs.push(VariableDefinition {
+                name,
+                var_type,
+                default_value,
+            });
+        }
+        self.expect(&TokenKind::ParenR)?;
+        if defs.is_empty() {
+            return self.syntax("変数定義リスト `()` は空にできません");
+        }
+        Ok(defs)
+    }
+
+    /// 型参照 `Type` / `[Type]` / `Type!`(2021年10月版 §2.11)。
+    fn parse_type(&mut self) -> Result<Type, ParseError> {
+        let base = if matches!(self.peek().kind, TokenKind::BracketL) {
+            self.bump();
+            let inner = self.parse_type()?;
+            self.expect(&TokenKind::BracketR)?;
+            Type::List(Box::new(inner))
+        } else {
+            let name = self.expect_name()?;
+            Type::Named(name)
+        };
+        if self.eat(&TokenKind::Bang) {
+            Ok(Type::NonNull(Box::new(base)))
+        } else {
+            Ok(base)
+        }
+    }
+
+    /// ディレクティブの並び `@name(arg: value) @other`(0個以上)。
+    fn parse_directives(&mut self) -> Result<Vec<Directive>, ParseError> {
+        let mut directives = Vec::new();
+        while matches!(self.peek().kind, TokenKind::At) {
+            self.bump();
+            let name = self.expect_name()?;
+            let arguments = if matches!(self.peek().kind, TokenKind::ParenL) {
+                self.parse_arguments()?
+            } else {
+                Vec::new()
+            };
+            directives.push(Directive { name, arguments });
+        }
+        Ok(directives)
+    }
+
+    /// フラグメント定義 `fragment Name on Type directives { ... }`。
+    fn parse_fragment_definition(&mut self) -> Result<FragmentDefinition, ParseError> {
+        self.bump(); // `fragment` キーワードを消費。
+        let name = self.expect_name()?;
+        if name == "on" {
+            return self.syntax("フラグメント名に予約語 `on` は使えません");
+        }
+        match &self.peek().kind {
+            TokenKind::Name(s) if s == "on" => {
+                self.bump();
+            }
+            other => {
+                return self.syntax(format!(
+                    "フラグメント定義には `on TypeName` が必要ですが {:?} が見つかりました",
+                    other
+                ))
+            }
+        }
+        let type_condition = self.expect_name()?;
+        let directives = self.parse_directives()?;
+        let selection_set = self.parse_selection_set()?;
+        Ok(FragmentDefinition {
+            name,
+            type_condition,
+            directives,
             selection_set,
         })
     }
@@ -196,11 +318,11 @@ impl Parser {
             if self.at_eof() {
                 return self.syntax("選択集合が `}` で閉じられていません");
             }
-            // フラグメント展開 `...` は v0.1.0 未対応。
             if matches!(self.peek().kind, TokenKind::Spread) {
-                return self.syntax("フラグメント展開(`...`)は v0.1.0 では未対応です");
+                selections.push(self.parse_fragment_spread_or_inline_fragment()?);
+            } else {
+                selections.push(self.parse_field()?);
             }
-            selections.push(self.parse_field()?);
         }
         self.expect(&TokenKind::BraceR)?;
         if selections.is_empty() {
@@ -209,7 +331,47 @@ impl Parser {
         Ok(SelectionSet { selections })
     }
 
-    /// フィールド選択 `alias: name(args) { ... }`。
+    /// `...` に続く、フラグメントスプレッド `...Name` またはインライン
+    /// フラグメント `... on Type { ... }` / `... { ... }`。
+    fn parse_fragment_spread_or_inline_fragment(&mut self) -> Result<Selection, ParseError> {
+        self.expect(&TokenKind::Spread)?;
+
+        // `... on Type { ... }`: 次が `on` という名前ならインラインフラグメント。
+        let is_on = matches!(&self.peek().kind, TokenKind::Name(s) if s == "on");
+        if is_on {
+            self.bump(); // `on` を消費。
+            let type_condition = Some(self.expect_name()?);
+            let directives = self.parse_directives()?;
+            let selection_set = self.parse_selection_set()?;
+            return Ok(Selection::InlineFragment(InlineFragment {
+                type_condition,
+                directives,
+                selection_set,
+            }));
+        }
+
+        // `... Name`: フラグメントスプレッド。
+        if let TokenKind::Name(_) = self.peek().kind {
+            let name = self.expect_name()?;
+            let directives = self.parse_directives()?;
+            return Ok(Selection::FragmentSpread(FragmentSpread {
+                name,
+                directives,
+            }));
+        }
+
+        // `... @directive { ... }` や `... { ... }`: 型条件省略のインライン
+        // フラグメント。
+        let directives = self.parse_directives()?;
+        let selection_set = self.parse_selection_set()?;
+        Ok(Selection::InlineFragment(InlineFragment {
+            type_condition: None,
+            directives,
+            selection_set,
+        }))
+    }
+
+    /// フィールド選択 `alias: name(args) directives { ... }`。
     fn parse_field(&mut self) -> Result<Selection, ParseError> {
         let first = self.expect_name()?;
 
@@ -227,6 +389,8 @@ impl Parser {
             Vec::new()
         };
 
+        let directives = self.parse_directives()?;
+
         let selection_set = if matches!(self.peek().kind, TokenKind::BraceL) {
             Some(self.parse_selection_set()?)
         } else {
@@ -237,6 +401,7 @@ impl Parser {
             alias,
             name,
             arguments,
+            directives,
             selection_set,
         }))
     }
@@ -347,6 +512,14 @@ pub fn parse(input: &str) -> Result<Document, ParseError> {
 mod tests {
     use super::*;
 
+    /// テスト用ヘルパー: 選択が`Field`であることを要求して取り出す。
+    fn as_field(sel: &Selection) -> &Field {
+        match sel {
+            Selection::Field(f) => f,
+            other => panic!("Field を期待しましたが {:?} でした", other),
+        }
+    }
+
     #[test]
     fn shorthand_query_single_field() {
         let doc = parse("{ hero }").unwrap();
@@ -354,8 +527,10 @@ mod tests {
         let op = &doc.operations[0];
         assert_eq!(op.operation, OperationType::Query);
         assert_eq!(op.name, None);
+        assert!(op.variable_definitions.is_empty());
+        assert!(op.directives.is_empty());
         assert_eq!(op.selection_set.selections.len(), 1);
-        let Selection::Field(f) = &op.selection_set.selections[0];
+        let f = as_field(&op.selection_set.selections[0]);
         assert_eq!(f.name, "hero");
         assert!(f.alias.is_none());
         assert!(f.arguments.is_empty());
@@ -367,11 +542,11 @@ mod tests {
         let doc = parse("query HeroName { hero { name friends { name } } }").unwrap();
         let op = &doc.operations[0];
         assert_eq!(op.name.as_deref(), Some("HeroName"));
-        let Selection::Field(hero) = &op.selection_set.selections[0];
+        let hero = as_field(&op.selection_set.selections[0]);
         assert_eq!(hero.name, "hero");
         let sub = hero.selection_set.as_ref().unwrap();
         assert_eq!(sub.selections.len(), 2);
-        let Selection::Field(friends) = &sub.selections[1];
+        let friends = as_field(&sub.selections[1]);
         assert_eq!(friends.name, "friends");
         assert!(friends.selection_set.is_some());
     }
@@ -379,7 +554,7 @@ mod tests {
     #[test]
     fn alias_is_parsed() {
         let doc = parse("{ empireHero: hero }").unwrap();
-        let Selection::Field(f) = &doc.operations[0].selection_set.selections[0];
+        let f = as_field(&doc.operations[0].selection_set.selections[0]);
         assert_eq!(f.alias.as_deref(), Some("empireHero"));
         assert_eq!(f.name, "hero");
     }
@@ -390,7 +565,7 @@ mod tests {
             r#"{ human(id: 1000, height: 1.8, name: "Luke", active: true, home: null, ep: JEDI) { name } }"#,
         )
         .unwrap();
-        let Selection::Field(f) = &doc.operations[0].selection_set.selections[0];
+        let f = as_field(&doc.operations[0].selection_set.selections[0]);
         assert_eq!(f.arguments.len(), 6);
         assert_eq!(f.arguments[0], Argument { name: "id".into(), value: Value::Int(1000) });
         assert_eq!(f.arguments[1], Argument { name: "height".into(), value: Value::Float(1.8) });
@@ -409,7 +584,7 @@ mod tests {
     #[test]
     fn list_and_object_and_variable_values() {
         let doc = parse(r#"{ f(nums: [1, 2, 3], obj: {a: 1, b: "x"}, v: $myVar) }"#).unwrap();
-        let Selection::Field(f) = &doc.operations[0].selection_set.selections[0];
+        let f = as_field(&doc.operations[0].selection_set.selections[0]);
         assert_eq!(
             f.arguments[0].value,
             Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
@@ -425,15 +600,6 @@ mod tests {
     }
 
     #[test]
-    fn mutation_is_reported_as_unsupported() {
-        let err = parse("mutation { like }").unwrap_err();
-        match err {
-            ParseError::Syntax { message, .. } => assert!(message.contains("未対応")),
-            _ => panic!("構文エラーを期待"),
-        }
-    }
-
-    #[test]
     fn empty_selection_set_is_rejected() {
         assert!(parse("{ }").is_err());
     }
@@ -441,5 +607,155 @@ mod tests {
     #[test]
     fn unterminated_selection_set_is_rejected() {
         assert!(parse("{ hero ").is_err());
+    }
+
+    #[test]
+    fn subscription_is_reported_as_unsupported() {
+        let err = parse("subscription { like }").unwrap_err();
+        match err {
+            ParseError::Syntax { message, .. } => assert!(message.contains("未対応")),
+            _ => panic!("構文エラーを期待"),
+        }
+    }
+
+    // --- v0.2.0: mutation ---
+
+    #[test]
+    fn mutation_operation_is_parsed() {
+        let doc = parse(r#"mutation LikeStory { like(storyID: 12345) { likeCount } }"#).unwrap();
+        let op = &doc.operations[0];
+        assert_eq!(op.operation, OperationType::Mutation);
+        assert_eq!(op.name.as_deref(), Some("LikeStory"));
+        let f = as_field(&op.selection_set.selections[0]);
+        assert_eq!(f.name, "like");
+        assert_eq!(f.arguments[0], Argument { name: "storyID".into(), value: Value::Int(12345) });
+    }
+
+    // --- v0.2.0: 変数定義 ---
+
+    #[test]
+    fn variable_definitions_are_parsed() {
+        let doc = parse(
+            r#"query Hero($episode: Episode, $withFriends: Boolean! = true) { hero(episode: $episode) { friends @include(if: $withFriends) { name } } }"#,
+        )
+        .unwrap();
+        let op = &doc.operations[0];
+        assert_eq!(op.variable_definitions.len(), 2);
+        assert_eq!(op.variable_definitions[0].name, "episode");
+        assert_eq!(op.variable_definitions[0].var_type, Type::Named("Episode".into()));
+        assert_eq!(op.variable_definitions[0].default_value, None);
+        assert_eq!(
+            op.variable_definitions[1].var_type,
+            Type::NonNull(Box::new(Type::Named("Boolean".into())))
+        );
+        assert_eq!(op.variable_definitions[1].default_value, Some(Value::Boolean(true)));
+
+        let hero = as_field(&op.selection_set.selections[0]);
+        assert_eq!(hero.arguments[0].value, Value::Variable("episode".into()));
+    }
+
+    #[test]
+    fn list_and_nonnull_list_types_are_parsed() {
+        let doc = parse(r#"query Q($ids: [ID!]!) { node }"#).unwrap();
+        let var_type = &doc.operations[0].variable_definitions[0].var_type;
+        assert_eq!(
+            *var_type,
+            Type::NonNull(Box::new(Type::List(Box::new(Type::NonNull(Box::new(
+                Type::Named("ID".into())
+            ))))))
+        );
+    }
+
+    #[test]
+    fn empty_variable_definitions_are_rejected() {
+        assert!(parse("query Q() { node }").is_err());
+    }
+
+    // --- v0.2.0: フラグメント ---
+
+    #[test]
+    fn fragment_definition_and_spread_are_parsed() {
+        let doc = parse(
+            r#"
+            query HeroComparison {
+                hero { ...HeroFields }
+            }
+            fragment HeroFields on Character {
+                name
+                appearsIn
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(doc.fragments.len(), 1);
+        let frag = &doc.fragments[0];
+        assert_eq!(frag.name, "HeroFields");
+        assert_eq!(frag.type_condition, "Character");
+        assert_eq!(frag.selection_set.selections.len(), 2);
+
+        let hero = as_field(&doc.operations[0].selection_set.selections[0]);
+        let sub = hero.selection_set.as_ref().unwrap();
+        match &sub.selections[0] {
+            Selection::FragmentSpread(spread) => assert_eq!(spread.name, "HeroFields"),
+            other => panic!("FragmentSpread を期待しましたが {:?} でした", other),
+        }
+    }
+
+    #[test]
+    fn inline_fragment_with_and_without_type_condition() {
+        let doc = parse(
+            r#"{
+                hero {
+                    ... on Droid { primaryFunction }
+                    ... @include(if: true) { name }
+                }
+            }"#,
+        )
+        .unwrap();
+        let hero = as_field(&doc.operations[0].selection_set.selections[0]);
+        let sub = hero.selection_set.as_ref().unwrap();
+        assert_eq!(sub.selections.len(), 2);
+        match &sub.selections[0] {
+            Selection::InlineFragment(inline) => {
+                assert_eq!(inline.type_condition.as_deref(), Some("Droid"));
+            }
+            other => panic!("InlineFragment を期待しましたが {:?} でした", other),
+        }
+        match &sub.selections[1] {
+            Selection::InlineFragment(inline) => {
+                assert_eq!(inline.type_condition, None);
+                assert_eq!(inline.directives.len(), 1);
+                assert_eq!(inline.directives[0].name, "include");
+            }
+            other => panic!("InlineFragment を期待しましたが {:?} でした", other),
+        }
+    }
+
+    #[test]
+    fn fragment_name_on_is_rejected() {
+        assert!(parse("fragment on on Type { name }").is_err());
+    }
+
+    // --- v0.2.0: ディレクティブ ---
+
+    #[test]
+    fn field_and_operation_directives_are_parsed() {
+        let doc = parse(
+            r#"query Q($skipName: Boolean!) @cached { hero { name @skip(if: $skipName) id } }"#,
+        )
+        .unwrap();
+        let op = &doc.operations[0];
+        assert_eq!(op.directives.len(), 1);
+        assert_eq!(op.directives[0].name, "cached");
+
+        let hero = as_field(&op.selection_set.selections[0]);
+        let sub = hero.selection_set.as_ref().unwrap();
+        let name_field = as_field(&sub.selections[0]);
+        assert_eq!(name_field.directives.len(), 1);
+        assert_eq!(name_field.directives[0].name, "skip");
+        assert_eq!(
+            name_field.directives[0].arguments[0],
+            Argument { name: "if".into(), value: Value::Variable("skipName".into()) }
+        );
     }
 }

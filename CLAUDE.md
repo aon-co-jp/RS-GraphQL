@@ -52,37 +52,52 @@ cargo test --features poem # Poem統合アダプタ(スタブ)を含む
 報告せず、必ず`cargo test`で実際にテストが通ることを確認する**
 (このエコシステムの検証文化)。
 
-## 現状(2026-07-18、v0.1.0)
+## 現状(2026-07-18、v0.2.0)
 
 - `src/token.rs`: `TokenKind`(区切り子・名前・整数/浮動小数/文字列・Eof)、
   位置情報付き`Token`、`TokenSink`トレイト、テスト用`CollectingSink`。
+  v0.2.0での字句トークン追加は不要だった(`$`/`@`/`...`/キーワードは
+  既存の`Dollar`/`At`/`Spread`/`Name`でそのまま表現できるため)。
 - `src/lexer.rs`: GraphQLクエリ言語のトークナイザ。無視トークン
   (空白・改行・カンマ・BOM・コメント`#`)、区切り子
   (`! $ & ( ) ... : = @ [ ] { } |`)、名前、整数/浮動小数リテラル
   (符号・小数部・指数部、先頭0の検出)、文字列(エスケープ`\uXXXX`含む)、
   ブロック文字列(`"""..."""`、共通インデント除去)。
-- `src/ast.rs`: `Document`/`OperationDefinition`/`SelectionSet`/
-  `Selection`/`Field`/`Argument`/`Value`。
-- `src/parser.rs`: 再帰下降パーサー。`query`操作(名前付き・無名省略形)、
-  フィールド選択・ネスト・引数・エイリアス、引数値(変数参照・数値・文字列・
-  真偽値・null・列挙値・リスト・入力オブジェクト)。未対応構文
-  (mutation/subscription・フラグメント`...`・変数定義`(...)`)は
-  明示的に「未対応」エラーとして報告。
+- `src/ast.rs`: `Document`(`operations`+`fragments`)、
+  `OperationDefinition`(`variable_definitions`/`directives`を追加)、
+  `VariableDefinition`、`Type`(`Named`/`List`/`NonNull`)、`Directive`、
+  `FragmentDefinition`、`FragmentSpread`、`InlineFragment`、
+  `SelectionSet`/`Selection`(`Field`/`FragmentSpread`/`InlineFragment`の
+  3variantへ拡張)/`Field`(`directives`を追加)/`Argument`/`Value`。
+- `src/parser.rs`: 再帰下降パーサー。v0.1.0の`query`操作(名前付き・
+  無名省略形)、フィールド選択・ネスト・引数・エイリアスに加え、
+  v0.2.0で以下を実装:
+  - `mutation`操作のパース(`query`と同じ経路、操作種別のみ分岐)。
+  - 変数定義`($id: ID!, $limit: Int = 10)`と型参照(`parse_type`、
+    名前付き型・リスト・非null修飾のネスト)。
+  - フラグメント定義`fragment Name on Type { ... }`(ドキュメント直下、
+    `Document::fragments`に集約)、フラグメントスプレッド`...Name`、
+    インラインフラグメント`... on Type { ... }` /
+    型条件省略の`... { ... }`。
+  - ディレクティブ`@name(arg: value)`の構文解析(操作・フィールド・
+    フラグメント定義・スプレッド・インラインフラグメントの各所)。
+    実行時評価(`@skip`/`@include`の条件によるフィールド除外)は
+    validation/execution層の範囲であり構文解析のみ。
+  - `subscription`操作のみ未対応のまま明示的エラーで報告。
 - `src/poem_adapter.rs`(`poem`フィーチャ時のみ): RPoem/Poem統合の
   **スタブ+設計メモ**。`GraphQLRequest::parse_query`はフレームワーク非依存の
   入口としてクエリをパースするのみ(本実装は次段階)。
-- **検証**: `cargo test`で16件green(コアのみ)、`--features poem`で17件green。
+- **検証**: `cargo test`で24件green(コアのみ)、`--features poem`で25件green。
   警告0件。
 
-## 未着手(次段階)
+## 未着手(次段階 v0.3.0以降)
 
-1. **mutation / subscription 操作**のパース(v0.1.0はqueryのみ)。
-2. **フラグメント**(定義・展開`...`・インラインフラグメント)。
-3. **変数定義**(`query Foo($id: ID!)`)・**ディレクティブ**(`@skip`等)。
-4. **スキーマ定義言語(SDL)のパーサー**(type定義・フィールド定義)——
-   v0.1.0では時間の都合で未着手、v0.2.0送り(当初計画どおり)。
-5. **検証(validation)・実行エンジン(execution/resolver)**。
-6. **`poem`フィーチャの本実装**(実際のpoem依存・非同期ハンドラ・
+1. **`subscription`操作**の実際のパース(型としては存在するが未対応)。
+2. **スキーマ定義言語(SDL)のパーサー**(type定義・フィールド定義)——
+   時間の都合で未着手、v0.3.0送り。
+3. **検証(validation)・実行エンジン(execution/resolver)**
+   (ディレクティブ`@skip`/`@include`の実行時評価もここに含まれる)。
+4. **`poem`フィーチャの本実装**(実際のpoem依存・非同期ハンドラ・
    GraphQL over HTTP対応。JSON取り回しは`RJSON`へ委譲する余地あり)。
 
 ## HANDOFF
@@ -95,8 +110,21 @@ cargo test --features poem # Poem統合アダプタ(スタブ)を含む
   ユーザー追加方針に従い、コアをフレームワーク非依存の純粋ライブラリに保ち、
   Poem統合は`poem`フィーチャのアダプタ層(`poem_adapter`)にスタブ+設計メモを
   用意した(本実装は次段階)。
-  次にすべきこと: 上記「未着手」1〜6。特にSDLパーサー(v0.2.0)と
-  mutation対応を優先候補とする。
+- **2026-07-18 v0.2.0: mutation/変数定義/フラグメント/ディレクティブ**:
+  `ast.rs`に`VariableDefinition`/`Type`/`Directive`/`FragmentDefinition`/
+  `FragmentSpread`/`InlineFragment`を追加し、`Document`に`fragments`、
+  `OperationDefinition`/`Field`にそれぞれ`variable_definitions`/
+  `directives`/`directives`フィールドを追加。`parser.rs`に
+  `parse_variable_definitions`/`parse_type`/`parse_directives`/
+  `parse_fragment_definition`/`parse_fragment_spread_or_inline_fragment`を
+  追加し、`mutation`操作の受理・変数定義・フラグメント定義/スプレッド/
+  インラインフラグメント・ディレクティブの構文解析に対応した。
+  字句トークンの追加は不要だった(既存の`Dollar`/`At`/`Spread`/`Name`で
+  全て表現可能だったため)。依存クレートは追加せず(引き続きゼロ依存)。
+  既存16テスト + 新規8テスト = `cargo test`で24件(poem込み25件)green・
+  警告0件を確認してからこのHANDOFFを追記。
+  次にすべきこと: 上記「未着手」1〜4。特にSDLパーサー(v0.3.0)を
+  優先候補とする。validation/executionはSDL後が現実的。
 
 ## 関連プロジェクト
 

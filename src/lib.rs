@@ -32,7 +32,8 @@ pub mod token;
 pub mod poem_adapter;
 
 pub use ast::{
-    Argument, Document, Field, OperationDefinition, OperationType, Selection, SelectionSet, Value,
+    Argument, Directive, Document, Field, FragmentDefinition, FragmentSpread, InlineFragment,
+    OperationDefinition, OperationType, Selection, SelectionSet, Type, Value, VariableDefinition,
 };
 pub use lexer::{tokenize, tokenize_into, LexError};
 pub use parser::{parse, ParseError};
