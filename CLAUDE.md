@@ -52,6 +52,37 @@ cargo test --features poem # Poem統合アダプタ(スタブ)を含む
 報告せず、必ず`cargo test`で実際にテストが通ることを確認する**
 (このエコシステムの検証文化)。
 
+## 現状(2026-07-19、v0.3.0: validation層の第一段)
+
+- `src/validation.rs`: パース済み`Document`を検証する`validate(&Document)
+  -> Vec<ValidationError>`を新規実装(スキーマ/型システムがまだ存在
+  しないため、ドキュメント自体だけで判定できる構造的ルールのみが対象)。
+  **実装したルール**: フラグメントスプレッド先の存在確認
+  (`UndefinedFragment`)、フラグメントの循環参照検出(`FragmentCycle`、
+  直接・間接どちらも検出)、未使用フラグメント定義(`UnusedFragment`、
+  他フラグメント経由の間接参照も到達可能と判定)、無名操作の単独性
+  (`LoneAnonymousOperation`)、操作名の一意性(`DuplicateOperationName`)、
+  変数の定義/使用整合性(`UndefinedVariable`/`UnusedVariable`、フラグメント
+  スプレッド越しの使用も辿る)、フィールド選択マージの部分集合
+  (`ConflictingFieldSelection`)。
+  **意図的に対象外としたもの(正直な開示)**:
+  1. 型システム依存のルール一式(フィールドがスキーマ上の型に存在するか、
+     引数の型・値の整合性等)— SDL/型システムが未実装のため原理的に不可。
+  2. Field Selection Mergingは同一`SelectionSet`直下の直接`Field`同士のみ
+     比較する部分集合実装。フラグメントスプレッド越しに同じレスポンス
+     キーが衝突するケース(例: 2つの異なるフラグメントが同じエイリアスで
+     矛盾するフィールドを提供する)は検出しない。
+  3. `UnusedVariable`(未使用変数)は実装によっては緩い場合があるルール
+     だが、仕様書は明確にMUSTと記載しているためエラーとして実装。ただし
+     他ルールと区別できるよう独立した`ValidationErrorKind`にしてあるので
+     将来的に選択的に無効化可能。
+  4. AST(`ast.rs`)がトークンの位置情報(`start`)を保持しないため、
+     `ValidationError`にソース位置(span)は含まれない
+     (メッセージ内の識別子名で代替)。
+  新規25テスト(既存24テスト + 新規25テスト = `cargo test`で49件、
+  `--features poem`で50件green、警告0件)。既存の`ast.rs`/`parser.rs`は
+  無変更(AST形状はv0.2.0のまま利用)。
+
 ## 現状(2026-07-18、v0.2.0)
 
 - `src/token.rs`: `TokenKind`(区切り子・名前・整数/浮動小数/文字列・Eof)、
@@ -90,13 +121,16 @@ cargo test --features poem # Poem統合アダプタ(スタブ)を含む
 - **検証**: `cargo test`で24件green(コアのみ)、`--features poem`で25件green。
   警告0件。
 
-## 未着手(次段階 v0.3.0以降)
+## 未着手(次段階 v0.4.0以降)
 
 1. **`subscription`操作**の実際のパース(型としては存在するが未対応)。
 2. **スキーマ定義言語(SDL)のパーサー**(type定義・フィールド定義)——
-   時間の都合で未着手、v0.3.0送り。
-3. **検証(validation)・実行エンジン(execution/resolver)**
+   型システム依存の検証ルール(フィールド存在確認・引数型チェック等)の
+   前提として必要。
+3. **実行エンジン(execution/resolver)**
    (ディレクティブ`@skip`/`@include`の実行時評価もここに含まれる)。
+   `validation`層はv0.3.0で第一段を実装済み(スキーマ非依存の構造的
+   ルールのみ。型システム依存のルールはSDL実装後)。
 4. **`poem`フィーチャの本実装**(実際のpoem依存・非同期ハンドラ・
    GraphQL over HTTP対応。JSON取り回しは`RJSON`へ委譲する余地あり)。
 
@@ -125,6 +159,15 @@ cargo test --features poem # Poem統合アダプタ(スタブ)を含む
   警告0件を確認してからこのHANDOFFを追記。
   次にすべきこと: 上記「未着手」1〜4。特にSDLパーサー(v0.3.0)を
   優先候補とする。validation/executionはSDL後が現実的。
+- **2026-07-19 v0.3.0: validation層(スキーマ非依存ルールの第一段)**:
+  `src/validation.rs`を新規実装し`lib.rs`から`validate`/`ValidationError`/
+  `ValidationErrorKind`を公開。`ast.rs`/`parser.rs`は無変更(既存のAST
+  形状をそのまま利用)。実装ルールと意図的に対象外としたものの一覧は
+  上記「現状」節に記載。既存24テスト+新規25テスト=`cargo test`で49件
+  (poem込み50件)green・警告0件を確認。
+  次にすべきこと: 上記「未着手」1〜4。SDLパーサー(型システム)の実装後、
+  型依存の検証ルール(フィールド存在確認等)とexecution層(resolver)へ
+  進むのが現実的な順序。
 
 ## 関連プロジェクト
 

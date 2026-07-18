@@ -17,16 +17,25 @@
 //!   エイリアス)をASTへ変換する再帰下降パーサー。
 //! - `ast`: クエリドキュメントのAST型。
 //!
+//! ## v0.3.0で追加したスコープ
+//! - `validation`モジュール: スキーマ非依存(型システムを持たない)の
+//!   構造的検証ルールの第一段(未使用/循環フラグメント、フラグメント
+//!   スプレッド先の存在確認、無名操作の単独性、操作名の一意性、
+//!   変数の定義/使用整合性、フィールド選択マージの部分集合)。
+//!   詳細と実装スコープの正直な開示は`validation`モジュールのドキュメント
+//!   コメント参照。
+//!
 //! ## 未着手(次段階)
-//! - mutation / subscription、フラグメント、変数定義、ディレクティブ。
-//! - スキーマ定義言語(SDL)のパーサー。
-//! - 検証(validation)・実行エンジン(resolver・execution)。
+//! - subscription、スキーマ定義言語(SDL)のパーサー。
+//! - 実行エンジン(resolver・execution。`validation`は本バージョンで
+//!   一部着手済み)。
 //! - `poem`フィーチャの本実装(現状はアダプタ層のスタブと設計メモのみ)。
 
 pub mod ast;
 pub mod lexer;
 pub mod parser;
 pub mod token;
+pub mod validation;
 
 #[cfg(feature = "poem")]
 pub mod poem_adapter;
@@ -38,3 +47,4 @@ pub use ast::{
 pub use lexer::{tokenize, tokenize_into, LexError};
 pub use parser::{parse, ParseError};
 pub use token::{CollectingSink, Token, TokenKind, TokenSink};
+pub use validation::{validate, ValidationError, ValidationErrorKind};

@@ -1,7 +1,7 @@
 [package]
 name = "rgraphql"
-description = "RGraphQL: a hand-rolled GraphQL query-language lexer and parser written from scratch in Rust (no existing GraphQL implementation reused). v0.2.0 covers the query-document tokenizer and a parser for query/mutation operations (field selections, nested selection sets, arguments, aliases, variable definitions, fragments, directives). No unsafe, no external parsing-crate dependency."
-version = "0.2.0"
+description = "RGraphQL: a hand-rolled GraphQL query-language lexer, parser, and validation layer written from scratch in Rust (no existing GraphQL implementation reused). v0.2.0 covers the query-document tokenizer and a parser for query/mutation operations (field selections, nested selection sets, arguments, aliases, variable definitions, fragments, directives). v0.3.0 adds a first increment of schema-independent structural validation. No unsafe, no external parsing-crate dependency."
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["RGraphQL Contributors"]
