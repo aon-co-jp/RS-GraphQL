@@ -6,7 +6,7 @@ edition = "2021"
 rust-version = "1.75"
 authors = ["RGraphQL Contributors"]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/aon-co-jp/RGraphQL"
+repository = "https://github.com/aon-co-jp/RS-GraphQL"
 
 [lints.rust]
 unsafe_code = "deny"

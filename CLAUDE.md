@@ -1,6 +1,15 @@
-# 開発方針・開発環境ルール(RGraphQL)
+# 開発方針・開発環境ルール(RS-GraphQL)
 
-作業ドライブは`F:\open-runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の`CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
+作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の`CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
+
+## リポジトリ改称(2026-09-13)
+
+`RGraphQL`→`RS-GraphQL`へGitHub上でrename済み。`aruaru.pro`向けの
+フロント基盤整備に合わせた`RFrontEnd`傘下のネーミング統一の一環
+(`RS-HTML`・`RS-CSS`・`RS-Node.js`も同時に改称)。crate名(`rgraphql`)は
+依存元が無いため変更しても影響は無いが、他の3リポジトリと揃えて
+今回は見送り(path参照が無いため実質的な変更対象自体が無い)。
+以下の記述内の`RGraphQL`表記は改称前の履歴として残す。
 
 ## このプロジェクトの役割(2026-07-18新設)
 
