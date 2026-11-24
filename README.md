@@ -1,3 +1,5 @@
+> Latest translations / 翻訳の最新版: [0-LATEST-TRANSLATIONS.md](0-LATEST-TRANSLATIONS.md)
+
 # RGraphQL
 
 GraphQLのRust版。既存のGraphQL実装(`async-graphql`/`juniper`/
